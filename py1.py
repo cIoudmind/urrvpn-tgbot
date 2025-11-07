@@ -24,6 +24,7 @@ XUI_PASSWORD = "MDNoJDxu3D"
 
 # --- 3. Тарифы (Цена указывается в копейках!) ---
 TARIFS = {
+    '3 day': {'label': '3 дня', 'days': 3, 'price': 300},
     '1_month': {'label': '1 Месяц', 'days': 30, 'price': 9000},
     '3_months': {'label': '3 Месяца', 'days': 90, 'price': 23000},
     '6_months': {'label': '6 Месяцев', 'days': 180, 'price': 40500}
@@ -136,7 +137,14 @@ def get_tariffs_keyboard():
     
     # Инициализируем Builder
     builder = InlineKeyboardBuilder() 
-    
+     
+    # --- Кнопка 1: 1m ---
+    builder.row(
+        InlineKeyboardButton(
+            text="3 дня", 
+            url='https://yookassa.ru/my/i/aQ5D948uFTGN/l' 
+        )
+    ) 
     # --- Кнопка 1: 1m ---
     builder.row(
         InlineKeyboardButton(
@@ -250,4 +258,5 @@ async def process_successful_payment(message: types.Message):
 if __name__ == '__main__':
     print("Бот запущен...")
     init_db()
+
     asyncio.run(dp.start_polling(bot))
