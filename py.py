@@ -4,28 +4,25 @@ import requests
 import json
 import uuid
 import asyncio
-import base64 # Добавлен для base64 кодирования ключей ЮKassa
+import base64
 
 from aiohttp import web 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import (
     InlineKeyboardButton,
-    InlineKeyboardMarkup, # Теперь доступен
+    InlineKeyboardMarkup,
     Message,
     CallbackQuery
 )
 from aiogram.filters import Command
 
 # --- 1. Основные Константы Бота, Платежей и Webhook ---
-BOT_TOKEN = "8270650286:AAGG3eWhr8jB5DrC5HnPoJ4NxMbJYMUFEos"
+BOT_TOKEN = "8398090520:AAFkaOvgYP7_01u88XOHGclvC6gKPOxQkXQ"
 DB_NAME = 'vpn_sales.db'
 XUI_INBOUND_ID = 9
 
 # --- КЛЮЧИ ЮKASSA ---
-# ВНИМАНИЕ: YOOKASSA_SECRET_KEY должен быть СЕКРЕТНЫМ КЛЮЧОМ, 
-# который выглядит как 'live_XXX' или 'test_XXX', а не в формате 'ID:KEY'.
-# Я оставляю ваши значения, но проверьте их формат.
 YOOKASSA_SHOP_ID = "1189951" 
 YOOKASSA_SECRET_KEY = "390540012:LIVE:80778" 
 YOOKASSA_WEBHOOK_PORT = 8443 
@@ -48,6 +45,9 @@ TARIFS = {
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 api_session = requests.Session() 
+
+# Глобальная переменная для username бота
+BOT_USERNAME = None
 
 # --- База Данных ---
 def init_db():
@@ -130,7 +130,7 @@ def create_3xui_user(user_email: str, expiry_days: int, inbound_id: int):
 
 # --- Логика ЮKassa API (Синхронная) ---
 
-def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
+def create_yookassa_payment(user_id: int, tariff_key: str, amount: int, bot_username: str):
     """Создает платеж через API ЮKassa и возвращает URL для оплаты."""
     payment_url = "https://api.yookassa.ru/v3/payments"
     
@@ -151,7 +151,7 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         },
         "confirmation": {
             "type": "redirect",
-            "return_url": f"https://t.me/{bot.me.username}"
+            "return_url": f"https://t.me/{bot_username}"
         },
         "capture": True,
         "description": f"Подписка VPN {TARIFS[tariff_key]['label']}",
@@ -198,7 +198,6 @@ async def issue_vpn_key_and_notify(user_id: int, tariff_key: str):
     # 2. Обработка ошибок и уведомление
     if error_msg:
         await bot.send_message(user_id, f"❌ **Критическая ошибка!** Оплата прошла, но не удалось создать ключ VPN (код: {error_msg}). Свяжитесь с поддержкой.")
-        # TODO: Отправка уведомления администратору!
         return
 
     # 3. Обновление Базы Данных (через Executor)
@@ -221,9 +220,6 @@ async def yookassa_webhook_handler(request):
         data = await request.json()
     except json.JSONDecodeError:
         return web.Response(status=400, text="Invalid JSON")
-
-    # TODO: В реальном коде ОБЯЗАТЕЛЬНО добавить проверку подписи ЮKassa 
-    # (X-YooKassa-Authorization) для безопасности.
 
     if data.get('event') == 'payment.succeeded':
         metadata = data.get('object', {}).get('metadata', {})
@@ -250,7 +246,6 @@ def get_tariffs_keyboard():
     
     for key, data in TARIFS.items():
         button_text = f"{data['label']} - {data['price'] / 100:.2f} RUB"
-        # Кнопки используют CALLBACK_DATA для запуска создания платежа
         builder.row(InlineKeyboardButton(text=button_text, callback_data=f"start_yookassa_{key}")) 
         
     return builder.as_markup()
@@ -270,7 +265,7 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
     PREFIX = 'start_yookassa_'
     tariff_key = callback_query.data[len(PREFIX):]
     
-    print(f"DEBUG: callback_data={callback_query.data}, tariff_key={tariff_key}")  # Для отладки
+    print(f"DEBUG: callback_data={callback_query.data}, tariff_key={tariff_key}")
     
     tariff = TARIFS.get(tariff_key)
     
@@ -283,29 +278,7 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
     payment_url, error_msg = await loop.run_in_executor(
         None, 
         create_yookassa_payment, 
-        user_id, tariff_key, tariff['price']
-    )
-    
-    if error_msg:
-        await bot.send_message(user_id, f"Ошибка создания платежа: {error_msg}")
-        return
-
-    # Отправляем пользователю ссылку для оплаты
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)]
-    ])
-    await bot.send_message(
-        user_id, 
-        f"Чтобы оплатить **{tariff['label']}**, перейдите по ссылке ниже. После успешной оплаты, ключ будет выдан автоматически.", 
-        reply_markup=keyboard
-    )
-
-    # Асинхронно вызываем синхронную функцию создания платежа
-    loop = asyncio.get_event_loop()
-    payment_url, error_msg = await loop.run_in_executor(
-        None, 
-        create_yookassa_payment, 
-        user_id, tariff_key, tariff['price']
+        user_id, tariff_key, tariff['price'], BOT_USERNAME  # Передаем username как параметр
     )
     
     if error_msg:
@@ -327,7 +300,7 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
 
 async def main():
     """Основная функция запуска бота и Webhook-сервера."""
-    global BOT_USERNAME # Объявляем глобальную переменную для записи
+    global BOT_USERNAME
 
     # 1. Явно получаем информацию о боте и устанавливаем BOT_USERNAME
     try:
@@ -336,7 +309,7 @@ async def main():
         print(f"Бот авторизован как @{BOT_USERNAME}")
     except Exception as e:
         print(f"Критическая ошибка: Не удалось получить имя пользователя бота! {e}")
-        return # Останавливаем выполнение, если не удалось получить имя
+        return
 
     # 2. Настройка Webhook-сервера AioHTTP
     app = web.Application()
@@ -353,7 +326,6 @@ async def main():
     
     # 3. Запуск бота (Polling)
     print("Бот запущен...")
-    # Polling блокирует выполнение, поэтому он должен быть последним
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
