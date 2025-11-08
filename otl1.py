@@ -151,10 +151,12 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         "Idempotence-Key": str(uuid.uuid4())
     }
     
-    payload = {
-        "amount": {
-            "value": f"{amount / 100:.2f}",
-            "currency": "RUB",
-        }
-            "confirmation"
-            "type"
+ payload = {
+    "amount": {
+        "value": f"{amount / 100:.2f}",
+        "currency": "RUB"
+    },
+    "confirmation": {
+        "type": "redirect"  # или другой тип подтверждения
+    }
+}
