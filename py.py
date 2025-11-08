@@ -151,7 +151,7 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         },
         "confirmation": {
             "type": "redirect",
-            "return_url": f"https://t.me/{bot.me.username}"
+            "return_url": f"https://t.me/fbot.me.username"
         },
         "capture": True,
         "description": f"Подписка VPN {TARIFS[tariff_key]['label']}",
