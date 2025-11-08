@@ -158,3 +158,4 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         },
         "confirmation": {
             "type":
+        }
