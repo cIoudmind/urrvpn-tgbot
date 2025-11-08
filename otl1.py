@@ -155,6 +155,6 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         "amount": {
             "value": f"{amount / 100:.2f}",
             "currency": "RUB",
-            "confirmation":
-            "type":
+            "confirmation",
+            "type"
         }
