@@ -264,8 +264,8 @@ async def cmd_buy(message: types.Message):
 async def process_tariff_selection(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     user_id = callback_query.from_user.id
-    # Извлечение ключа тарифа из callback_data
-    tariff_key = callback_query.data.split('_')[-1] 
+    PREFIX = 'start_yookassa_'
+    tariff_key = callback_query.data[len(PREFIX):] 
     tariff = TARIFS.get(tariff_key)
     
     if not tariff:
