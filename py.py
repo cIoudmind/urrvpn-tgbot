@@ -16,6 +16,11 @@ from aiogram.types import (
     CallbackQuery
 )
 from aiogram.filters import Command
+from requests.auth import HTTPBasicAuth
+
+auth = HTTPBasicAuth('your_shop_id', 'your_secret_key')
+response = requests.post('https://api.yookassa.ru/v3/payments', auth=auth, json=payload)
+
 
 # --- 1. Основные Константы Бота, Платежей и Webhook ---
 BOT_TOKEN = "8398090520:AAFkaOvgYP7_01u88XOHGclvC6gKPOxQkXQ"
