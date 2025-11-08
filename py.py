@@ -266,13 +266,39 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     
     user_id = callback_query.from_user.id
-    # Извлечение ключа тарифа из callback_data
-    tariff_key = callback_query.data.split('_')[-1] 
+    # ПРАВИЛЬНОЕ извлечение ключа тарифа из callback_data
+    PREFIX = 'start_yookassa_'
+    tariff_key = callback_query.data[len(PREFIX):]
+    
+    print(f"DEBUG: callback_data={callback_query.data}, tariff_key={tariff_key}")  # Для отладки
+    
     tariff = TARIFS.get(tariff_key)
     
     if not tariff:
-        await bot.send_message(user_id, "Неизвестный тариф.")
+        await bot.send_message(user_id, f"Неизвестный тариф: {tariff_key}")
         return
+
+    # Асинхронно вызываем синхронную функцию создания платежа
+    loop = asyncio.get_event_loop()
+    payment_url, error_msg = await loop.run_in_executor(
+        None, 
+        create_yookassa_payment, 
+        user_id, tariff_key, tariff['price']
+    )
+    
+    if error_msg:
+        await bot.send_message(user_id, f"Ошибка создания платежа: {error_msg}")
+        return
+
+    # Отправляем пользователю ссылку для оплаты
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)]
+    ])
+    await bot.send_message(
+        user_id, 
+        f"Чтобы оплатить **{tariff['label']}**, перейдите по ссылке ниже. После успешной оплаты, ключ будет выдан автоматически.", 
+        reply_markup=keyboard
+    )
 
     # Асинхронно вызываем синхронную функцию создания платежа
     loop = asyncio.get_event_loop()
