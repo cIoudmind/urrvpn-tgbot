@@ -4,33 +4,32 @@ import requests
 import json
 import uuid
 import asyncio
+import base64 # Добавлен для base64 кодирования ключей ЮKassa
 
-from aiohttp import web # НОВЫЙ ИМПОРТ: для веб-сервера и Webhook
+from aiohttp import web 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import InlineKeyboardButton
-from aiogram.filters import Command
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils.keyboard import InlineKeyboardBuilder 
 from aiogram.types import (
-    LabeledPrice, 
-    PreCheckoutQuery, 
-    # Убедитесь, что эти два класса импортированы!
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
-    Message, 
-    CallbackQuery)
+    InlineKeyboardButton,
+    InlineKeyboardMarkup, # Теперь доступен
+    Message,
+    CallbackQuery
+)
+from aiogram.filters import Command
 
 # --- 1. Основные Константы Бота, Платежей и Webhook ---
 BOT_TOKEN = "8270650286:AAGG3eWhr8jB5DrC5HnPoJ4NxMbJYMUFEos"
 DB_NAME = 'vpn_sales.db'
-XUI_INBOUND_ID = 11
+XUI_INBOUND_ID = 9
 
 # --- КЛЮЧИ ЮKASSA ---
-YOOKASSA_SHOP_ID = "1189951" # !!! ЗАМЕНИТЕ ЭТО !!!
-YOOKASSA_SECRET_KEY = "390540012:LIVE:80778" # !!! ЗАМЕНИТЕ ЭТО !!!
-YOOKASSA_WEBHOOK_PORT = 8443 # Порт, на котором будет работать Webhook-сервер
-YOOKASSA_WEBHOOK_URL = "/yookassa_webhook" # Эндпоинт, который ЮKassa будет вызывать
+# ВНИМАНИЕ: YOOKASSA_SECRET_KEY должен быть СЕКРЕТНЫМ КЛЮЧОМ, 
+# который выглядит как 'live_XXX' или 'test_XXX', а не в формате 'ID:KEY'.
+# Я оставляю ваши значения, но проверьте их формат.
+YOOKASSA_SHOP_ID = "1189951" 
+YOOKASSA_SECRET_KEY = "390540012:LIVE:80778" 
+YOOKASSA_WEBHOOK_PORT = 8443 
+YOOKASSA_WEBHOOK_URL = "/yookassa_webhook" 
 
 # --- 2. Константы 3x-ui Панели ---
 XUI_PANEL_HOST = "http://185.114.73.28:9421"
@@ -48,8 +47,6 @@ TARIFS = {
 # --- Инициализация ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-# Используем сессию requests для 3x-ui и ЮKassa API
-# Примечание: для асинхронности, синхронные вызовы обернуты в loop.run_in_executor
 api_session = requests.Session() 
 
 # --- База Данных ---
@@ -80,7 +77,6 @@ def update_subscription(user_id, end_date, config_link):
 
 def login_3xui():
     """Авторизуется в 3x-ui и возвращает объект сессии с куками."""
-    # Используем api_session для повторного использования кук
     try:
         login_url = f"{XUI_PANEL_HOST}/login"
         response = api_session.post(
@@ -138,10 +134,14 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
     """Создает платеж через API ЮKassa и возвращает URL для оплаты."""
     payment_url = "https://api.yookassa.ru/v3/payments"
     
+    # Кодирование в Base64 для заголовка Authorization
+    auth_string = f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}"
+    encoded_auth = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
+    
     headers = {
-        "Authorization": "Basic " + (f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}".encode('utf-8')).base64(),
+        "Authorization": f"Basic {encoded_auth}",
         "Content-Type": "application/json",
-        "Idempotence-Key": str(uuid.uuid4()) # Гарантия однократного выполнения
+        "Idempotence-Key": str(uuid.uuid4())
     }
     
     payload = {
@@ -151,11 +151,10 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         },
         "confirmation": {
             "type": "redirect",
-            "return_url": f"https://t.me/{bot.me.username}" # Возвращение в бота
+            "return_url": f"https://t.me/{bot.me.username}"
         },
         "capture": True,
         "description": f"Подписка VPN {TARIFS[tariff_key]['label']}",
-        # Метаданные для отслеживания (КЛЮЧЕВЫЕ ДАННЫЕ)
         "metadata": {
             "tg_user_id": str(user_id),
             "tariff_key": tariff_key
@@ -241,7 +240,6 @@ async def yookassa_webhook_handler(request):
                 print(f"Ошибка Webhook: Неверный user_id {user_id_str}")
                 return web.Response(status=400)
     
-    # Всегда возвращаем 200, даже если статус не интересен (например, waiting_for_capture)
     return web.Response(status=200)
 
 # --- Обработчики Telegram ---
@@ -266,7 +264,8 @@ async def cmd_buy(message: types.Message):
 async def process_tariff_selection(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     user_id = callback_query.from_user.id
-    tariff_key = callback_query.data.split('_')[-1]
+    # Извлечение ключа тарифа из callback_data
+    tariff_key = callback_query.data.split('_')[-1] 
     tariff = TARIFS.get(tariff_key)
     
     if not tariff:
@@ -286,10 +285,15 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
         return
 
     # Отправляем пользователю ссылку для оплаты
+    # InlineKeyboardMarkup теперь определен и может быть использован
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)]
     ])
-    await bot.send_message(user_id, f"Чтобы оплатить **{tariff['label']}**, перейдите по ссылке ниже. После успешной оплаты, ключ будет выдан автоматически.", reply_markup=keyboard)
+    await bot.send_message(
+        user_id, 
+        f"Чтобы оплатить **{tariff['label']}**, перейдите по ссылке ниже. После успешной оплаты, ключ будет выдан автоматически.", 
+        reply_markup=keyboard
+    )
 
 
 # --- ЗАПУСК БОТА И WEBHOOK-СЕРВЕРА ---
@@ -309,7 +313,8 @@ async def main():
     
     # Запуск бота (Polling)
     print("Бот запущен...")
-    await dp.start_polling(bot)
+    # Используем skip_updates=True при первом запуске, чтобы не обрабатывать старые запросы
+    await dp.start_polling(bot, skip_updates=True) 
 
 if __name__ == '__main__':
     try:
