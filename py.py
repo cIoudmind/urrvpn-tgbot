@@ -29,7 +29,7 @@ XUI_INBOUND_ID = 11
 # --- КЛЮЧИ ЮKASSA ---
 YOOKASSA_SHOP_ID = "1189951" # !!! ЗАМЕНИТЕ ЭТО !!!
 YOOKASSA_SECRET_KEY = "390540012:LIVE:80778" # !!! ЗАМЕНИТЕ ЭТО !!!
-YOOKASSA_WEBHOOK_PORT = 8080 # Порт, на котором будет работать Webhook-сервер
+YOOKASSA_WEBHOOK_PORT = 8443 # Порт, на котором будет работать Webhook-сервер
 YOOKASSA_WEBHOOK_URL = "/yookassa_webhook" # Эндпоинт, который ЮKassa будет вызывать
 
 # --- 2. Константы 3x-ui Панели ---
