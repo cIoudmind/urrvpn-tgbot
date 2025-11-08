@@ -151,7 +151,7 @@ def create_yookassa_payment(user_id: int, tariff_key: str, amount: int):
         },
         "confirmation": {
             "type": "redirect",
-            "return_url": f"https://t.me/fbot.me.username"
+            "return_url": f"https://t.me/{bot.me.username}"
         },
         "capture": True,
         "description": f"Подписка VPN {TARIFS[tariff_key]['label']}",
@@ -262,10 +262,12 @@ async def cmd_buy(message: types.Message):
 # --- Обработчик запуска платежа ЮKassa (Callback) ---
 @dp.callback_query(lambda c: c.data and c.data.startswith('start_yookassa_'))
 async def process_tariff_selection(callback_query: types.CallbackQuery):
+    # Сразу отвечаем на callback query чтобы избежать ошибки "query is too old"
     await bot.answer_callback_query(callback_query.id)
+    
     user_id = callback_query.from_user.id
-    PREFIX = 'start_yookassa_'
-    tariff_key = callback_query.data[len(PREFIX):] 
+    # Извлечение ключа тарифа из callback_data
+    tariff_key = callback_query.data.split('_')[-1] 
     tariff = TARIFS.get(tariff_key)
     
     if not tariff:
@@ -285,7 +287,6 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
         return
 
     # Отправляем пользователю ссылку для оплаты
-    # InlineKeyboardMarkup теперь определен и может быть использован
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)]
     ])
@@ -299,22 +300,35 @@ async def process_tariff_selection(callback_query: types.CallbackQuery):
 # --- ЗАПУСК БОТА И WEBHOOK-СЕРВЕРА ---
 
 async def main():
-    # Настройка Webhook-сервера
+    """Основная функция запуска бота и Webhook-сервера."""
+    global BOT_USERNAME # Объявляем глобальную переменную для записи
+
+    # 1. Явно получаем информацию о боте и устанавливаем BOT_USERNAME
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+        print(f"Бот авторизован как @{BOT_USERNAME}")
+    except Exception as e:
+        print(f"Критическая ошибка: Не удалось получить имя пользователя бота! {e}")
+        return # Останавливаем выполнение, если не удалось получить имя
+
+    # 2. Настройка Webhook-сервера AioHTTP
     app = web.Application()
     app.router.add_post(YOOKASSA_WEBHOOK_URL, yookassa_webhook_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
+    
     # Запуск на 0.0.0.0, чтобы слушать все внешние IP
     site = web.TCPSite(runner, '0.0.0.0', YOOKASSA_WEBHOOK_PORT) 
     
     print(f"Webhook-сервер запущен на порту {YOOKASSA_WEBHOOK_PORT}...")
     await site.start()
     
-    # Запуск бота (Polling)
+    # 3. Запуск бота (Polling)
     print("Бот запущен...")
-    # Используем skip_updates=True при первом запуске, чтобы не обрабатывать старые запросы
-    await dp.start_polling(bot, skip_updates=True) 
+    # Polling блокирует выполнение, поэтому он должен быть последним
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
     try:
