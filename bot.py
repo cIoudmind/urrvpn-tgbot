@@ -7,6 +7,7 @@ import asyncio
 import base64
 import traceback
 import logging
+import re
 
 from aiohttp import web 
 from aiogram import Bot, Dispatcher, types
@@ -43,7 +44,7 @@ XUI_PASSWORD = "MDNoJDxu3D"
 
 # --- 3. Тарифы (Цена указывается в копейках!) ---
 TARIFS = {
-    '3_day': {'label': '3 дня', 'days': 3, 'price': 100},
+    '3_day': {'label': '3 дня', 'days': 3, 'price': 300},
     '1_month': {'label': '1 Месяц', 'days': 30, 'price': 9000},
     '3_months': {'label': '3 Месяца', 'days': 90, 'price': 23000},
     '6_months': {'label': '6 Месяцев', 'days': 180, 'price': 40500}
@@ -78,129 +79,454 @@ def update_subscription(user_id, end_date, config_link):
     conn.commit()
     conn.close()
 
-# --- ИСПРАВЛЕННАЯ Логика 3x-ui API ---
+# --- УНИВЕРСАЛЬНЫЙ КЛАСС ДЛЯ РАБОТЫ С X-UI ПАНЕЛЬЮ ---
 
-def login_3xui_session(timeout=10):
-    """
-    Авторизуется в 3x-ui и возвращает requests.Session() с cookies.
-    """
-    try:
-        session = requests.Session()
-        login_url = f"{XUI_PANEL_HOST}/login"
+class UniversalXUIPanel:
+    def __init__(self, host, username, password):
+        self.host = host.rstrip('/')
+        self.username = username
+        self.password = password
+        self.session = None
+        self.panel_type = None
         
-        # Для 3x-ui обычно нужен POST с form data
-        login_data = {
-            'username': XUI_USERNAME,
-            'password': XUI_PASSWORD
-        }
-        
-        resp = session.post(login_url, data=login_data, timeout=timeout)
-        resp.raise_for_status()
+    def login(self):
+        """Универсальный метод авторизации"""
+        try:
+            self.session = requests.Session()
+            self.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            })
+            
+            # Пробуем разные endpoint'ы и методы
+            login_methods = [
+                self._try_standard_login,
+                self._try_json_login,
+                self._try_with_csrf,
+                self._try_ajax_endpoints
+            ]
+            
+            for method in login_methods:
+                logger.info(f"Пробуем метод: {method.__name__}")
+                success = method()
+                if success:
+                    logger.info(f"✅ Авторизация успешна через {method.__name__}")
+                    return True
+            
+            logger.error("❌ Все методы авторизации не сработали")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка авторизации: {e}")
+            return False
+    
+    def _try_standard_login(self):
+        """Стандартный логин через form data"""
+        try:
+            endpoints = [
+                "/login",
+                "/xui/login",
+                "/api/login",
+                "/auth/login",
+                "/user/login"
+            ]
+            
+            for endpoint in endpoints:
+                login_data = {
+                    'username': self.username,
+                    'password': self.password
+                }
+                
+                resp = self.session.post(
+                    self.host + endpoint, 
+                    data=login_data, 
+                    timeout=15,
+                    verify=False,
+                    allow_redirects=True
+                )
+                
+                logger.info(f"Endpoint {endpoint}: статус {resp.status_code}")
+                
+                if self._check_login_success(resp):
+                    return True
+                    
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка стандартного логина: {e}")
+            return False
+    
+    def _try_json_login(self):
+        """Логин через JSON"""
+        try:
+            endpoints = [
+                "/login",
+                "/api/login",
+                "/xui/api/login"
+            ]
+            
+            for endpoint in endpoints:
+                login_data = {
+                    'username': self.username,
+                    'password': self.password
+                }
+                
+                # Временно меняем заголовки для JSON
+                original_headers = self.session.headers.copy()
+                self.session.headers.update({'Content-Type': 'application/json'})
+                
+                resp = self.session.post(
+                    self.host + endpoint,
+                    json=login_data,
+                    timeout=15,
+                    verify=False
+                )
+                
+                # Возвращаем оригинальные заголовки
+                self.session.headers = original_headers
+                
+                logger.info(f"JSON {endpoint}: статус {resp.status_code}")
+                
+                if self._check_login_success(resp):
+                    return True
+                    
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка JSON логина: {e}")
+            return False
+    
+    def _try_with_csrf(self):
+        """Логин с получением CSRF токена"""
+        try:
+            # Сначала получаем страницу логина
+            resp = self.session.get(self.host + "/login", timeout=10, verify=False)
+            
+            # Ищем CSRF токен в разных форматах
+            csrf_patterns = [
+                r'name=[\'"]_token[\'"]\s+value=[\'"]([^\'"]*)[\'"]',
+                r'name=[\'"]csrf_token[\'"]\s+value=[\'"]([^\'"]*)[\'"]',
+                r'csrf-token[\'"]\s+content=[\'"]([^\'"]*)[\'"]',
+                r'"_token"\s*:\s*"([^"]+)"'
+            ]
+            
+            csrf_token = None
+            for pattern in csrf_patterns:
+                match = re.search(pattern, resp.text, re.IGNORECASE)
+                if match:
+                    csrf_token = match.group(1)
+                    break
+            
+            login_data = {
+                'username': self.username,
+                'password': self.password
+            }
+            
+            if csrf_token:
+                login_data['_token'] = csrf_token
+                login_data['csrf_token'] = csrf_token
+            
+            resp = self.session.post(
+                self.host + "/login",
+                data=login_data,
+                timeout=15,
+                verify=False,
+                allow_redirects=True
+            )
+            
+            return self._check_login_success(resp)
+            
+        except Exception as e:
+            logger.error(f"Ошибка CSRF логина: {e}")
+            return False
+    
+    def _try_ajax_endpoints(self):
+        """Пробуем AJAX endpoint'ы"""
+        try:
+            endpoints = [
+                "/xui/API/inbound/add",
+                "/api/v1/login",
+                "/ajax/login"
+            ]
+            
+            for endpoint in endpoints:
+                login_data = {
+                    'username': self.username,
+                    'password': self.password
+                }
+                
+                resp = self.session.post(
+                    self.host + endpoint,
+                    data=login_data,
+                    timeout=15,
+                    verify=False
+                )
+                
+                if self._check_login_success(resp):
+                    return True
+                    
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка AJAX логина: {e}")
+            return False
+    
+    def _check_login_success(self, response):
+        """Проверяем успешность авторизации"""
+        try:
+            # Проверяем статус код
+            if response.status_code != 200:
+                return False
+            
+            # Проверяем текст ответа
+            text_lower = response.text.lower()
+            
+            # Признаки успеха
+            success_indicators = [
+                'success' in text_lower,
+                'true' in text_lower and 'false' not in text_lower,
+                'dashboard' in text_lower,
+                'welcome' in text_lower,
+                'panel' in text_lower,
+                '"success":true' in text_lower,
+                '"code":0' in text_lower,
+                '登录成功' in text_lower,  # Китайский
+                '登录成功' in response.text  # Китайский UTF-8
+            ]
+            
+            # Проверяем JSON ответ
+            try:
+                json_data = response.json()
+                if json_data.get('success') or json_data.get('code') == 0:
+                    return True
+            except:
+                pass
+            
+            # Проверяем редирект на dashboard
+            if response.history and any('dashboard' in url.lower() for url in [r.url for r in response.history]):
+                return True
+            
+            return any(success_indicators)
+            
+        except Exception as e:
+            logger.error(f"Ошибка проверки успешности: {e}")
+            return False
+    
+    def create_client(self, email, expiry_days, inbound_id):
+        """Создает клиента в панели"""
+        try:
+            if not self.session:
+                if not self.login():
+                    return None, "Не удалось авторизоваться в панели"
+            
+            # Генерируем UUID
+            client_uuid = str(uuid.uuid4())
+            
+            # Вычисляем timestamp
+            expiry_date = datetime.datetime.now() + datetime.timedelta(days=expiry_days)
+            expiry_timestamp = int(expiry_date.timestamp() * 1000)
+            
+            # Пробуем разные методы создания клиента
+            creation_methods = [
+                self._create_client_standard,
+                self._create_client_direct,
+                self._create_client_ajax
+            ]
+            
+            for method in creation_methods:
+                logger.info(f"Пробуем метод создания: {method.__name__}")
+                config_link, error = method(email, client_uuid, expiry_timestamp, inbound_id)
+                if config_link:
+                    return config_link, None
+            
+            return None, "Все методы создания клиента не сработали"
+            
+        except Exception as e:
+            error_msg = f"Ошибка создания клиента: {str(e)}"
+            logger.error(error_msg)
+            return None, error_msg
+    
+    def _create_client_standard(self, email, client_uuid, expiry_timestamp, inbound_id):
+        """Стандартный метод создания клиента"""
+        try:
+            # Получаем текущие настройки инбаунда
+            inbound_url = f"{self.host}/xui/inbound/list"
+            resp = self.session.get(inbound_url, timeout=10, verify=False)
+            
+            if resp.status_code != 200:
+                return None, "Не удалось получить список инбаундов"
+            
+            inbound_data = resp.json()
+            target_inbound = None
+            
+            for inbound in inbound_data.get('obj', []):
+                if inbound.get('id') == inbound_id:
+                    target_inbound = inbound
+                    break
+            
+            if not target_inbound:
+                return None, f"Инбаунд с ID {inbound_id} не найден"
+            
+            # Парсим настройки
+            inbound_settings = json.loads(target_inbound['settings'])
+            clients = inbound_settings.get('clients', [])
+            
+            # Создаем нового клиента
+            new_client = {
+                "id": client_uuid,
+                "email": email,
+                "enable": True,
+                "flow": "",
+                "limitIp": 0,
+                "totalGB": 0,
+                "expiryTime": expiry_timestamp,
+                "tgId": "",
+                "subId": ""
+            }
+            
+            # Проверяем на дубликат
+            for client in clients:
+                if client.get('email') == email:
+                    return None, f"Клиент с email {email} уже существует"
+            
+            clients.append(new_client)
+            inbound_settings['clients'] = clients
+            
+            # Обновляем инбаунд
+            update_url = f"{self.host}/xui/inbound/update/{inbound_id}"
+            update_data = {
+                "id": inbound_id,
+                "settings": json.dumps(inbound_settings),
+                "streamSettings": target_inbound.get('streamSettings', ''),
+                "sniffing": target_inbound.get('sniffing', ''),
+                "remark": target_inbound.get('remark', ''),
+                "up": target_inbound.get('up', 0),
+                "down": target_inbound.get('down', 0),
+                "protocol": target_inbound.get('protocol', ''),
+                "port": target_inbound.get('port', '')
+            }
+            
+            resp = self.session.post(update_url, json=update_data, timeout=15, verify=False)
+            
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get('success', False):
+                    config_link = f"{self.host}/sub/{client_uuid}"
+                    return config_link, None
+                else:
+                    return None, f"Ошибка обновления: {result.get('msg', 'Unknown error')}"
+            else:
+                return None, f"HTTP ошибка: {resp.status_code}"
+                
+        except Exception as e:
+            return None, f"Ошибка стандартного метода: {str(e)}"
+    
+    def _create_client_direct(self, email, client_uuid, expiry_timestamp, inbound_id):
+        """Прямое создание клиента через API"""
+        try:
+            client_data = {
+                "id": client_uuid,
+                "email": email,
+                "flow": "",
+                "limitIp": 0,
+                "totalGB": 0,
+                "expiryTime": expiry_timestamp,
+                "enable": True,
+                "tgId": "",
+                "subId": ""
+            }
+            
+            endpoints = [
+                f"/xui/inbound/addClient",
+                f"/api/inbound/addClient",
+                f"/inbound/addClient"
+            ]
+            
+            for endpoint in endpoints:
+                payload = {
+                    "id": inbound_id,
+                    "settings": json.dumps({"clients": [client_data]})
+                }
+                
+                resp = self.session.post(
+                    self.host + endpoint,
+                    json=payload,
+                    timeout=15,
+                    verify=False
+                )
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if result.get('success') or result.get('code') == 0:
+                        config_link = f"{self.host}/sub/{client_uuid}"
+                        return config_link, None
+            
+            return None, "Прямое создание не сработало"
+            
+        except Exception as e:
+            return None, f"Ошибка прямого метода: {str(e)}"
+    
+    def _create_client_ajax(self, email, client_uuid, expiry_timestamp, inbound_id):
+        """Создание через AJAX"""
+        try:
+            endpoints = [
+                "/xui/API/inbound/add",
+                "/api/v1/client/add"
+            ]
+            
+            for endpoint in endpoints:
+                client_data = {
+                    "inboundId": inbound_id,
+                    "email": email,
+                    "uuid": client_uuid,
+                    "expiryTime": expiry_timestamp,
+                    "enable": True
+                }
+                
+                resp = self.session.post(
+                    self.host + endpoint,
+                    data=client_data,
+                    timeout=15,
+                    verify=False
+                )
+                
+                if resp.status_code == 200:
+                    try:
+                        result = resp.json()
+                        if result.get('success') or result.get('code') == 0:
+                            config_link = f"{self.host}/sub/{client_uuid}"
+                            return config_link, None
+                    except:
+                        if 'success' in resp.text.lower():
+                            config_link = f"{self.host}/sub/{client_uuid}"
+                            return config_link, None
+            
+            return None, "AJAX метод не сработал"
+            
+        except Exception as e:
+            return None, f"Ошибка AJAX метода: {str(e)}"
 
-        # Проверяем успешность авторизации
-        if resp.status_code == 200:
-            logger.info("Успешная авторизация в 3x-ui")
-            return session
-        else:
-            logger.error(f"Ошибка авторизации: {resp.status_code}")
-            return None
+# Глобальный экземпляр панели
+xui_panel = UniversalXUIPanel(XUI_PANEL_HOST, XUI_USERNAME, XUI_PASSWORD)
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка авторизации в 3x-ui: {e}")
-        return None
+# --- Логика 3x-ui API (использует универсальный класс) ---
 
 def create_3xui_user(user_email: str, expiry_days: int, inbound_id: int):
     """
-    Создаёт клиента в 3x-ui и возвращает (config_link, None) при успешном создании,
-    или (None, error_message).
+    Создаёт клиента в 3x-ui используя универсальный класс
     """
     try:
-        session = login_3xui_session()
-        if not session:
-            return None, "Ошибка авторизации в 3x-ui."
-
-        # Генерируем UUID для клиента
-        client_uuid = str(uuid.uuid4())
+        logger.info(f"Создаем пользователя {user_email} на {expiry_days} дней")
         
-        # Вычисляем timestamp в миллисекундах
-        expiry_date = datetime.datetime.now() + datetime.timedelta(days=expiry_days)
-        expiry_timestamp_ms = int(expiry_date.timestamp() * 1000)
-
-        # Получаем текущие настройки инбаунда
-        inbound_list_url = f"{XUI_PANEL_HOST}/xui/inbound/list"
-        resp = session.get(inbound_list_url, timeout=10)
-        resp.raise_for_status()
-        inbound_list = resp.json()
-
-        # Находим нужный инбаунд
-        target_inbound = None
-        for inbound in inbound_list.get('obj', []):
-            if inbound.get('id') == inbound_id:
-                target_inbound = inbound
-                break
-
-        if not target_inbound:
-            return None, f"Инбаунд с ID {inbound_id} не найден"
-
-        # Парсим настройки инбаунда
-        inbound_settings = json.loads(target_inbound['settings'])
-        clients = inbound_settings.get('clients', [])
-
-        # Проверяем, нет ли уже пользователя с таким email
-        for client in clients:
-            if client.get('email') == user_email:
-                return None, f"Пользователь с email {user_email} уже существует"
-
-        # Создаем нового клиента
-        new_client = {
-            "id": client_uuid,
-            "email": user_email,
-            "enable": True,
-            "flow": "",
-            "limitIp": 0,
-            "totalGB": 0,
-            "expiryTime": expiry_timestamp_ms,
-            "tgId": "",
-            "subId": ""
-        }
-
-        clients.append(new_client)
-        inbound_settings['clients'] = clients
-
-        # Обновляем инбаунд
-        update_url = f"{XUI_PANEL_HOST}/xui/inbound/update/{inbound_id}"
-        update_data = {
-            "id": inbound_id,
-            "settings": json.dumps(inbound_settings),
-            "streamSettings": target_inbound.get('streamSettings', ''),
-            "sniffing": target_inbound.get('sniffing', ''),
-            "remark": target_inbound.get('remark', ''),
-            "up": target_inbound.get('up', 0),
-            "down": target_inbound.get('down', 0),
-            "protocol": target_inbound.get('protocol', ''),
-            "port": target_inbound.get('port', '')
-        }
-
-        resp = session.post(update_url, json=update_data, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
-
-        if result.get('success', False):
-            # Генерируем ссылку подписки
-            config_link = f"{XUI_PANEL_HOST}/sub/{client_uuid}"
-            logger.info(f"Успешно создан пользователь {user_email} с ссылкой {config_link}")
-            return config_link, None
-        else:
-            error_msg = f"Ошибка создания пользователя: {result.get('msg', 'Unknown error')}"
-            logger.error(error_msg)
+        config_link, error_msg = xui_panel.create_client(user_email, expiry_days, inbound_id)
+        
+        if error_msg:
+            logger.error(f"Ошибка создания пользователя: {error_msg}")
             return None, error_msg
-
-    except requests.exceptions.RequestException as e:
-        error_msg = f"Ошибка сети при создании пользователя в 3x-ui: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
+        
+        logger.info(f"Успешно создан пользователь {user_email}, ссылка: {config_link}")
+        return config_link, None
+        
     except Exception as e:
-        error_msg = f"Неожиданная ошибка при создании пользователя в 3x-ui: {str(e)}"
+        error_msg = f"Неожиданная ошибка: {str(e)}"
         logger.error(error_msg)
         traceback.print_exc()
         return None, error_msg
@@ -426,6 +752,23 @@ async def cmd_help(message: types.Message):
         "• Сохраните вашу конфигурационную ссылку в надежном месте"
     )
 
+@dp.message(Command("test_panel"))
+async def cmd_test_panel(message: types.Message):
+    """Команда для тестирования подключения к панели"""
+    await message.answer("🔧 Тестирую подключение к панели...")
+    
+    try:
+        # Тестируем подключение
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, xui_panel.login)
+        
+        if success:
+            await message.answer("✅ Подключение к панели успешно!")
+        else:
+            await message.answer("❌ Не удалось подключиться к панели. Проверьте настройки.")
+    except Exception as e:
+        await message.answer(f"💥 Ошибка тестирования: {e}")
+
 # --- ЗАПУСК БОТА И WEBHOOK-СЕРВЕРА ---
 
 async def main():
@@ -441,12 +784,14 @@ async def main():
         BOT_USERNAME = me.username
         logger.info(f"Бот авторизован как @{BOT_USERNAME}")
 
-        # Проверяем подключение к 3x-ui
-        test_session = login_3xui_session()
-        if test_session:
-            logger.info("Подключение к 3x-ui панели успешно")
+        # Тестируем подключение к панели
+        logger.info("Тестируем подключение к 3x-ui панели...")
+        panel_success = await asyncio.get_event_loop().run_in_executor(None, xui_panel.login)
+        
+        if panel_success:
+            logger.info("✅ Подключение к 3x-ui панели успешно")
         else:
-            logger.warning("Не удалось подключиться к 3x-ui панели")
+            logger.warning("❌ Не удалось подключиться к 3x-ui панели. Проверьте настройки.")
 
     except Exception as e:
         logger.error(f"Критическая ошибка при инициализации: {e}")
