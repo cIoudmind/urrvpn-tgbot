@@ -1,0 +1,1 @@
+pip install aiogram aiosqlite yookassa crypto-pay-api remnawave-api aiohttp
